@@ -1,0 +1,8 @@
+1. Refactor test to be in test directory
+2. Make sure that entire flow works
+3. Keep two tables 
+a. blogger_stories
+b. blogger_stories_history
+4. Make sure that every single day, it checks and transfer data
+5. Capture exceptions everywhere
+6. Make sure that it logs 
