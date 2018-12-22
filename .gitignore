@@ -2,3 +2,5 @@
 *.log
 *.txt
 *.csv
+deprecated/*
+research/*
