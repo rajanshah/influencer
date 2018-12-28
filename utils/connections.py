@@ -2,7 +2,7 @@ import rethinkdb as r
 
 def get_rethink_connection(props):
 	''' get rethink db connection  '''
-
+	
 	rethink_conn = r.connect(host=props.get('RETHINKDB', 'RETHINK_HOST'),\
 								port=props.get('RETHINKDB', 'RETHINK_PORT'),\
 								db=props.get('RETHINKDB', 'RETHINK_DB'),\

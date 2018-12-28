@@ -1,10 +1,6 @@
-# numpy
-numpy
-
-# pandas
-pandas
-
-# rethinkdb
-rethinkdb
-
-
+argparse
+rethinkdb 
+schedule
+uuid
+newspaper
+selenium 

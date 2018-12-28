@@ -4,22 +4,31 @@ import logging
 import logging.handlers
 import os
 import rethinkdb as r
+import sys
+import socket
+import schedule
 import time
 import uuid
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from datetime import datetime, timedelta 
+from logging.handlers import SysLogHandler
 from newspaper import Article
 from selenium import webdriver
+from time import strptime
 from utils import read_config
 from utils.connections import get_rethink_connection
 
-LOG_FILENAME = '/tmp/seekingalpha.log'
+TABLE_STORY_INFO = 'story_info'
+TABLE_ARTICLE_INFO = 'article_info'
+TABLE_AUTHOR_INFO = 'author_info'
+DB_NAME = 'test'
 
-my_logger = logging.getLogger('intellimind')
-my_logger.setLevel(logging.DEBUG)
-
-handler = logging.handlers.RotatingFileHandler(LOG_FILENAME,
-                                               mode='a',
-                                               )
-my_logger.addHandler(handler)
+# setting logger
+logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 def parse_arguments():
 	''' parse arguments '''
@@ -37,6 +46,7 @@ def clean_text(element):
 	'''
 		clean text for the element
 	'''
+
 	text = element.get_attribute('textContent')
 	text = text.replace("\n","").strip()
 	text = ''.join([i if ord(i) < 128 else ' ' for i in text])
@@ -47,11 +57,14 @@ def scrape_author_info(browser, authors_info_list):
 		author information extraction
 	'''
 	
+	global db_cache
+	logger.info('scraping authors info')
+
 	article_list = []
+	new_authors_info_list = []
 	for author in authors_info_list:
 		try:
 			article = {}
-			index = authors_info_list.index(author)
 			browser.get(author['url'])
 			time.sleep(3)
 			author_name = browser.find_element_by_xpath("//div[@class='about-author-name']")
@@ -64,8 +77,8 @@ def scrape_author_info(browser, authors_info_list):
 			img = browser.find_element_by_xpath("//img").get_attribute('src')
 			author['picture'] = img
 			author['user_id'] = str(uuid.uuid4())
-			article['author_id'] = author['user_id']
-			my_logger.info("Processing info for :" + author_name)
+			logger.info("Processing info for :" + author_name)
+		
 			try:
 				more = browser.find_element_by_partial_link_text('more')
 			except:
@@ -82,7 +95,8 @@ def scrape_author_info(browser, authors_info_list):
 				author['firm_name'] = (clean_text(company).split(":")[1]).strip()
 			else:
 				since = browser.find_element_by_xpath("//div[@class='about-member-since']")	
-				author['description'] = browser.find_element_by_xpath("//p[@class='profile-bio-truncate']").text
+				author['description'] = browser.\
+					find_element_by_xpath("//p[@class='profile-bio-truncate']").text
 				author['since'] = (clean_text(since).split(':')[1]).strip()
 				company = browser.find_element_by_xpath("//div[@class='about-company']")
 				author['firm_name'] = clean_text(company)		
@@ -90,41 +104,75 @@ def scrape_author_info(browser, authors_info_list):
 		except Exception as e:
 			continue	
 		finally:
-			article_list.append(article)
-			authors_info_list.pop(index)
-			authors_info_list.insert(index,author)
-	return article_list,authors_info_list
+		
+			# avoiding resaving of author data
+			if author['name'] not in db_cache['author']['name']:
+				new_authors_info_list.append(author)
+			else:
+				# getting index to find 'user_id' of same author in db_cache
+				index = db_cache['author']['name'].index(author['name'])	
+				author['user_id'] = db_cache['author']['user_id'][index]
+				
+			article['author_id'] = author['user_id']
+			article_list.append(article)	
+			
+	logger.info('Number of new authors :' + str(len(new_authors_info_list)))
+	return article_list, new_authors_info_list
 
 def store_author_data(config, authors_info_list):
 	'''
 		store author data to rethinkdb
 	'''
 
-	for author in authors_info_list:
+	logger.info('saving author info')
+	try:
+		logger.info('Connecting to Rethink DB')
 		conn = get_rethink_connection(config)
-		authors = r.table('author_info').run(conn)
-		authors_names = [ person['name'] for person in authors]
-		if not author['name'] in authors_names:
-			inserted = r.table('author_info').insert(author).run(conn)
-			my_logger.info("Inserted Author:%s" % author['name'])
-
+		logger.info('Connected')
+	except Exception as e:
+		logger.info(e)
+		return
+	
+	try:	
+		for author in authors_info_list:
+			r.db(DB_NAME).table(TABLE_AUTHOR_INFO).insert(author).run(conn)
+			logger.info("inserted author :%s" % author['name'])
+	except Exception as e:
+		logger.info('Error in storing data :'+ str(e))
+		return
+	
 def store_story_data(config, story_list, articles_info_list):
 	'''
 		store articles and story data
 	'''
 	
-	for story in story_list:
-		if story['text'] == "":
-			continue
+	logger.info('saving story and article data')
+	
+	try:
+		logger.info('Connecting to Rethink TABLE for store_story_data')
 		conn = get_rethink_connection(config)
-		stories = r.table('story_info').run(conn)
-		story_names = [ story_info['title'] for story_info in stories]
-		if not story['title'] in story_names:
+		logger.info('Connected')
+	except Exception as e:
+		logger.info('Error :'+str(e))
+		return
+
+	try:
+		for story in story_list:
+
+			# avoid storing empty story or with exception of field 'text'
+			if story.get('text') in ["", None]:
+				continue
+			
 			index = story_list.index(story)
-			r.table('story_info').insert(story,conflict = "replace").run(conn)
-			r.table('article_info').insert(articles_info_list[index], conflict="replace").run(conn)
-			my_logger.info("Inserted Story:%s" % story['title'])
-		
+			r.db(DB_NAME).table(TABLE_STORY_INFO).\
+				insert(story,conflict = "replace").run(conn)
+			r.db(DB_NAME).table(TABLE_ARTICLE_INFO).\
+				insert(articles_info_list[index], conflict="replace").run(conn)
+			logger.info("storing new Story:%s" % story['title'])
+	
+	except Exception as e:
+		logger.info('Error in storing story data' +str(e))
+
 def fetch_authors(tds, category):
 	'''
 		fetch authors for the category
@@ -132,6 +180,7 @@ def fetch_authors(tds, category):
 
 	article = tds[0].find_element_by_tag_name('div')
 	tds.pop(0)
+	
 	authors_list = [] 
 	for td in tds:
 		author_info = {}
@@ -143,97 +192,109 @@ def fetch_authors(tds, category):
 		author_info['category'] = category
 		author_info['sub_category'] = article.get_attribute('textContent') 
 		authors_list.append(author_info)
+	
 	return authors_list
 
-def scrape_story_info(delay, story_list, root_dir):
+def scrape_story_info(delay, story_list, article_info_list, root_dir):
 	'''
 		scrape for story text
 	'''
-		
+	
+	logger.info('scrapping story info')
 	for story in story_list:
 		try:
 			index = story_list.index(story)
-			article = Article(story['url'])
+			article = Article(story['url'].strip())
 			time.sleep(1)
 			article.download()
 			article.html
 			article.parse()
 			story['text'] = article.text
 			story.pop('url')
-			my_logger.info("Article:%s" % article.title) 
+			logger.info("Article:%s" % article.title) 
 			time.sleep(delay)
 			
 		except Exception as e:
-			continue
-		finally:
+			# when failed to download story
 			story_list.pop(index)
-			story_list.insert(index,story)
-	return story_list
+			article_info_list.pop(index)
+
+	return story_list, article_info_list
 	
 def scrape_article_info(browser, article_list):
 	'''
 		scrape article information categorywise
 	'''
 	
+	global db_cache
+
 	story_list = []
 	articles_info_list = []
 	count = 0
-	for articles_info in article_list:
-		browser.get(articles_info['url'])
-		author_id = articles_info['author_id']
-		category = articles_info['category']
-		sub_cat = articles_info['sub_cat']
-		articles = browser.find_elements_by_xpath("//div[@class='author-single-article']")
-		for article_info in articles:
-			article = {}
-			story = {}			
-			article_url = article_info.find_element_by_tag_name("a").get_attribute('href')
-			article['article_url'] = article_url
-			
-			updated_date = article_info.find_element_by_xpath("//div[@class='author-article-info']")
-			article['update_date'] = clean_text(updated_date.find_element_by_tag_name('span'))
-			article['author_id'] = author_id
-			article['story_id'] = str(uuid.uuid4())
-			story['story_id'] = article['story_id']
-			story['url'] = article_url
-			story['title'] = article_info.find_element_by_tag_name("a").text
-			story['cat'] = category
-			story['sub_cat'] = sub_cat
-			count = count + 1
-			story_list.append(story)
-			articles_info_list.append(article)
-	my_logger.info('No of articles :%s' % count)
-	return story_list,articles_info_list
+	logger.info('Scrapping article info')
 	
-def store_json_data(authors_list, category, root_dir):
-	'''
-		store data to jsonfile
-	'''
+	try:		
+		for articles_info in article_list:
+			browser.get(articles_info['url'])
+			author_id = articles_info['author_id']
+			category = articles_info['category']
+			sub_cat = articles_info['sub_cat']
+			articles = browser.find_elements_by_xpath("//div[@class='author-single-article']")
+			
+			for article_info in articles:
+				article = {}
+				story = {}			
+				article_url = article_info.find_element_by_tag_name("a").get_attribute('href')
+				article['article_url'] = article_url			
+				updated_date = article_info.\
+					find_element_by_xpath("//div[@class='author-article-info']")
+				article['update_date'] = clean_text(updated_date.\
+					find_element_by_tag_name('span'))
+		
+				try:
+					# making sure it got exact format like e.g. 'Thu, Dec. 20'
+					strptime(article['update_date'], '%a, %b. %d')
+				
+				except ValueError as e:
 
-	for author in authors_list:
-		path_to_dir = os.path.join(root_dir)
-		if not os.path.exists(path_to_dir):
-			os.makedirs(path_to_dir)
-		author_path = os.path.join(path_to_dir,"%s.json"% author['name'])
-		with open(author_path,'w') as fp:
-			json.dump(author,fp)
+					# in case of update_date does not match format like
+					# e.g (Yesterday or Today) then change it to today
+					article['update_date'] = datetime.today().strftime('%a, %b. %d')
+				
+				article['author_id'] = author_id
+				article['story_id'] = str(uuid.uuid4())
+				story['story_id'] = article['story_id']
+				story['url'] = article_url
+				story['title'] = article_info.find_element_by_tag_name("a").text
+				story['cat'] = category
+				story['sub_cat'] = sub_cat
+			
+				# To avoind refetching of same data
+				if story['title'] not in db_cache['story']['title']:
+					articles_info_list.append(article)
+					story_list.append(story)
+					count = count + 1
+					
+		logger.info('No of new articles fetched : %s' % count)
+	except Exception as e :
+		logger.info("Excpetion :"+str(e))
+	finally:
+		return story_list,articles_info_list
 	
 def scrape_records(browser, url_page, root_dir, config):
 	'''
 		scrape records for authorsn
-
 	'''
 
 	try:
 		browser.get(url_page)
-		my_logger.info('START')
+		logger.info('START')
 		delay = config.get('SEEKINGALPHA','DELAY')
 		tbodies = browser.find_elements_by_tag_name('tbody')
 		authors_info_list = []
 		author_names_list = []
-		count = 0
-
-		my_logger.info('Fetching Authors List.....')
+		
+		logger.info('Fetching Authors List ...')
 		
 		# fetch list of authors
 		for tbody in tbodies:
@@ -257,35 +318,103 @@ def scrape_records(browser, url_page, root_dir, config):
 		
 		# remove duplicates 
 		authors_info = []
-		for author in authors_info_list:
+		for author in authors_info_list[0:3]:
 			if not author['name'] in author_names_list:
 				author_names_list.append(author['name'])
 				authors_info.append(author)
 	
-		# scrape & store data
+		logger.info('Authors list fetched')
+
+		# scrape authors complete info and all articles link
 		article_list,authors_info = scrape_author_info(browser,authors_info)
+		
+		# store data of authors into db
 		store_author_data(config, authors_info)
+		
+		# scarping new articles info from article_list pointing to stack of articles of one by one author 
 		story_list,articles_info_list = scrape_article_info(browser, article_list)
-		story_list = scrape_story_info(delay, story_list, root_dir)
+		
+		# scrapping actual story
+		story_list, articles_info_list = scrape_story_info(delay, story_list, articles_info_list , root_dir)
+		
+		# storing story and article into db
 		store_story_data(config, story_list, articles_info_list)
 		
 	except Exception as e:
-		my_logger.error("%s" % e.message)
+		logger.error("Exception :%s" % e)
 	finally:
-		my_logger.info('FINISH')
+		logger.info('FINISH')
 		browser.quit()
 
-if __name__ == '__main__':
+def update_db_cache():
+	''' To update cache from database for optimization '''
 
+	global db_cache
+	try:
+		logger.info('Connecting to Rethink DB for update_db_cache')
+		conn = get_rethink_connection(config)
+		logger.info('Connected')
+	except Exception as e:
+		logger.info('Error while caching urls:'+str(e))
+		return
+	
+	db_cache = {'story':{'title':[]
+						}, 
+				'author':{'name':[], 
+						'user_id':[]
+						}
+				}
+
+	stories = r.db(DB_NAME).table(TABLE_STORY_INFO).run(conn)
+	for story in stories:
+		db_cache['story']['title'].append(story.get('title'))
+	logger.info('cache updated stories:' + str(len(db_cache['story']['title'])))
+	
+	authors = r.db(DB_NAME).table(TABLE_AUTHOR_INFO).run(conn)
+	for author in authors:
+		db_cache['author']['name'].append(author['name'])
+		db_cache['author']['user_id'].append(author['user_id'])
+	logger.info('cache updated authors :' + str(len(db_cache['author']['name'])))
+	
+
+if __name__ == '__main__':
 	'''
-		python scrape.py --config=XXX --root_dir=YYY
+		python scrape.py --config=XXX --root_dir=YYY	
 	'''
 
 	# parse arguments
 	result = parse_arguments()
 	config = read_config(result.config)
 	root_dir = result.root_dir
+
+	# logging configuration
+	try:
+		logger.info('Connecting to PAPERTRAIL ...')
+		syslog = SysLogHandler(address=(config.get('PAPERTRAIL', 'LOG_SERVER'), int(config.get('PAPERTRAIL', 'LOG_PORT'))))
+		logger.info('Connected to PAPERTRAIL')
+	except:
+		logger.info('Error in connecting PaperTrail server')
+
+	hostname = socket.gethostname() if socket.gethostname() else socket.getfqdn()
+	formatter = logging.Formatter('{0}:%(asctime)s.%(msecs)d %(levelname)s %(module)s - %(funcName)s: %(message)s'.format(hostname),'%Y-%m-%d %H:%M:%S')
+	syslog.setFormatter(formatter)
+	logger.addHandler(syslog)
+
 	firefox = config.get('FIREFOX','DRIVER_PATH')
 	browser = webdriver.Firefox(executable_path=firefox)
 	url_page = config.get('SEEKINGALPHA','LEADERS_URL')
-	scrape_records(browser,url_page,root_dir, config)
+	wait_time = int(config.get('SEEKINGALPHA','WAIT_TIME'))
+	start_time_cache = config.get('SEEKINGALPHA','START_TIME_CACHE')
+	db_cache = dict()
+	
+	# setting scheduling
+	schedule.every().day.at(start_time_cache).do(update_db_cache)
+	update_db_cache()
+	schedule.every().hour.do(scrape_records, browser, url_page, root_dir, config)
+
+	
+	logger.info('Starting Scheduler ...')
+	while True:
+		schedule.run_pending()
+		time.sleep(wait_time)
+	
