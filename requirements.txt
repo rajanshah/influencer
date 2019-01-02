@@ -1,6 +1,20 @@
+# parse it
 argparse
-rethinkdb 
+
+# rethinkdb
+rethinkdb==2.2.0.post6
+
+# scheduler
 schedule
+
+# uuid
 uuid
-newspaper
+
+# mockthink
+mockthink
+
+# newspaper
+newspaper3k
+
+# selenium
 selenium 

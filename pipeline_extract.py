@@ -10,7 +10,7 @@ import schedule
 import time
 import uuid
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from datetime import datetime, timedelta 
 from logging.handlers import SysLogHandler
@@ -29,6 +29,8 @@ DB_NAME = 'test'
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+db_cache = {}
 
 def parse_arguments():
 	''' parse arguments '''
@@ -57,7 +59,6 @@ def scrape_author_info(browser, authors_info_list):
 		author information extraction
 	'''
 	
-	global db_cache
 	logger.info('scraping authors info')
 
 	article_list = []
@@ -226,7 +227,6 @@ def scrape_article_info(browser, article_list):
 		scrape article information categorywise
 	'''
 	
-	global db_cache
 
 	story_list = []
 	articles_info_list = []
@@ -349,7 +349,6 @@ def scrape_records(browser, url_page, root_dir, config):
 def update_db_cache():
 	''' To update cache from database for optimization '''
 
-	global db_cache
 	try:
 		logger.info('Connecting to Rethink DB for update_db_cache')
 		conn = get_rethink_connection(config)
@@ -405,7 +404,6 @@ if __name__ == '__main__':
 	url_page = config.get('SEEKINGALPHA','LEADERS_URL')
 	wait_time = int(config.get('SEEKINGALPHA','WAIT_TIME'))
 	start_time_cache = config.get('SEEKINGALPHA','START_TIME_CACHE')
-	db_cache = dict()
 	
 	# setting scheduling
 	schedule.every().day.at(start_time_cache).do(update_db_cache)
