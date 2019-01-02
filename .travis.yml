@@ -1,0 +1,17 @@
+language: python
+sudo: required
+python:
+- "2.7"
+cache:
+ directories:
+ - "$HOME/.cache/pip"
+install:
+- pip install -r requirements.txt
+script:
+- nosetests -sv
+notifications:
+  email:
+    recipients:
+      - alert@intellimind.io
+    on_success: never # default: change
+    on_failure: always # default: always

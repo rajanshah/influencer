@@ -4,12 +4,25 @@ import logging
 import unittest
 import rethinkdb as r
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-import pipeline_extract
-
 from mock import patch, Mock
 from mockthink import MockThink
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from pipeline_extract import get_rethink_connection
+
+from pipeline_extract import clean_text
+from pipeline_extract import fetch_authors
+
+from pipeline_extract import scrape_article_info
+from pipeline_extract import scrape_author_info
+from pipeline_extract import scrape_records
+from pipeline_extract import scrape_story_info
+
+from pipeline_extract import store_author_data
+from pipeline_extract import store_story_data
+
+from pipeline_extract import update_db_cache
 
 class TestPipelineExtractor(unittest.TestCase):
 	
@@ -33,7 +46,7 @@ class TestPipelineExtractor(unittest.TestCase):
 
 		with db.connect() as conn:
 			mock_get_rethink.return_value = conn
-			pipeline_extract.store_author_data(config, authors_list)
+			store_author_data(config, authors_list)
 			count = r.db(self.DB_NAME).table(self.TABLE_AUTHOR_INFO).count().run(conn)
 			self.assertEqual(count, len(authors_list))
 
@@ -53,7 +66,7 @@ class TestPipelineExtractor(unittest.TestCase):
 
 		with db.connect() as conn:
 			mock_get_rethink.return_value = conn
-			pipeline_extract.store_story_data(config, story_list, article_list)
+			store_story_data(config, story_list, article_list)
 
 			count_story = r.db(self.DB_NAME).table(self.TABLE_STORY_INFO).count().run(conn)
 			count_article = r.db(self.DB_NAME).table(self.TABLE_ARTICLE_INFO).count().run(conn)
