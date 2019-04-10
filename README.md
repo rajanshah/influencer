@@ -1,4 +1,4 @@
-# influencer
+# influencer - DEPRECATED
 People influencing the eco system
 
 # Synopsis #
