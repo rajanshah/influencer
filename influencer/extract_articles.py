@@ -1,6 +1,5 @@
 import argparse
 import os
-import rethinkdb as r
 import sys
 import time
 import uuid
@@ -22,7 +21,6 @@ import traceback
 
 from time import strptime
 from utils import read_config
-from utils.connections import get_rethink_connection
 
 
 from helpers.log import get_logger
@@ -36,6 +34,26 @@ TABLE_AUTHOR_INFO = "author_info"
 DB_NAME = "test"
 
 db_cache = {}
+
+from helpers.connections import get_mongo_connection
+
+import pymongo
+
+
+def save_to_db(article, db, collection, config):
+	mongo_connection = get_mongo_connection(config)
+	coll = mongo_connection[db][collection]
+	coll.create_index([("url", pymongo.ASCENDING)], background=True)
+	coll.create_index([("update_date", pymongo.ASCENDING)], background=True)
+	coll.insert_one(article)
+
+
+def is_new_record(db, collection, key, value, config):
+	mongo_connection = get_mongo_connection(config)
+	coll = mongo_connection[db][collection]
+	if coll.count_documents({key: value}) > 0:
+		return False
+	return True
 
 
 def clean_text(text):
@@ -226,39 +244,6 @@ def scrape_authors_list(driver, url):
 	return authors
 
 
-def record_exists(conn, key, value, table_name):
-	return r.db(DB_NAME).table(table_name).filter({key: value}).count().run(conn) > 0
-
-
-def insert_item(conn, item, table_name):
-	r.db(DB_NAME).table(table_name).insert(item).run(conn)
-
-
-def update_db_cache():
-	""" To update cache from database for optimization """
-
-	try:
-		logger.info("Connecting to Rethink DB for update_db_cache")
-		conn = get_rethink_connection(config)
-		logger.info("Connected")
-	except Exception as e:
-		logger.info("Error while caching urls:" + str(e))
-		return
-
-	db_cache = {"story": {"title": []}, "author": {"name": [], "user_id": []}}
-
-	stories = r.db(DB_NAME).table(TABLE_STORY_INFO).run(conn)
-	for story in stories:
-		db_cache["story"]["title"].append(story.get("title"))
-	logger.info("cache updated stories:" + str(len(db_cache["story"]["title"])))
-
-	authors = r.db(DB_NAME).table(TABLE_AUTHOR_INFO).run(conn)
-	for author in authors:
-		db_cache["author"]["name"].append(author["name"])
-		db_cache["author"]["user_id"].append(author["user_id"])
-	logger.info("cache updated authors :" + str(len(db_cache["author"]["name"])))
-
-
 def get_firefox_driver(driver_path):
 	options = webdriver.FirefoxOptions()
 	options.headless = True
@@ -278,13 +263,17 @@ if __name__ == "__main__":
 	url = config.get("SEEKINGALPHA", "LEADERS_URL")
 	# LEADERS_URL is set to https://seekingalpha.com/author/sa-eli-hoffmann/following
 
-	try:
-		logger.info("Connecting to Rethink DB for update_db_cache")
-		conn = get_rethink_connection(config)
-		logger.info("Connected")
-	except Exception as e:
-		logger.info("Error while caching urls:" + str(e))
-		exit()
+	DB = config.get("INFLUENCER", "DB")
+	ARTICLE_COLLECTION = config.get("INFLUENCER", "ARTICLE_COLLECTION")
+	AUTHOR_COLLECTION = config.get("INFLUENCER", "AUTHOR_COLLECTION")
+
+	mongo_connection = get_mongo_connection(config)
+	coll = mongo_connection[DB][ARTICLE_COLLECTION]
+	coll.create_index([("url", pymongo.ASCENDING)], background=True)
+	coll.create_index([("update_date", pymongo.ASCENDING)], background=True)
+
+	coll = mongo_connection[DB][AUTHOR_COLLECTION]
+	coll.create_index([("url", pymongo.ASCENDING)], background=True)
 
 	try:
 		driver = get_firefox_driver(driver_path)
@@ -292,17 +281,14 @@ if __name__ == "__main__":
 
 		for author in authors_list:
 			articles = scrape_author_info(driver, author)
-			if not record_exists(
-				conn, "url", author["url"], table_name=TABLE_AUTHOR_INFO
-			):
-				insert_item(conn, author, table_name=TABLE_AUTHOR_INFO)
+			if is_new_record(DB, AUTHOR_COLLECTION, "url", author["url"], config):
+				save_to_db(author, DB, AUTHOR_COLLECTION, config)
 
 			for article in articles:
-				if not record_exists(
-					conn, "url", article["url"], table_name=TABLE_ARTICLE_INFO
-				):
+				if is_new_record(DB, ARTICLE_COLLECTION, "url", article["url"], config):
 					scrape_story_info(driver, article)
-					insert_item(conn, article, table_name=TABLE_ARTICLE_INFO)
+					save_to_db(article, DB, ARTICLE_COLLECTION, config)
+
 	except Exception as e:
 		logger.error(f"Scraping failed {e.args}, {traceback.format_exc()}")
 	finally:
