@@ -1,6 +1,3 @@
-[![No Maintenance Intended](http://unmaintained.tech/badge.svg)](http://unmaintained.tech/)
-
-# DEPRECATED
 People influencing the eco system
 
 # Synopsis #
